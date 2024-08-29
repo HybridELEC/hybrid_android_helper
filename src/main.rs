@@ -1,8 +1,11 @@
 use std::{fs::{read_dir, DirEntry, File, ReadDir}, io::Read, os::unix::ffi::OsStrExt, path::Path};
 
+use clap::{command, Parser};
+
+#[derive(Debug)]
 enum Error {
     IOError (String),
-    NotSubsystem,
+    InvalidSystem,
     IllegalID,
 }
 
@@ -45,26 +48,48 @@ fn read_dir_checked<P: AsRef<Path>>(path: P) -> Result<ReadDir> {
 
 #[derive(Clone, Copy)]
 enum SubSystem {
-    CoreELEC,
-    EmuELEC
+    OfficialCoreELEC,
+    OfficialEmuELEC,
+    HybridCoreELEC,
+    HybridEmuELEC,
 }
 
 impl SubSystem {
+    fn as_str(&self) -> &'static str {
+        match self {
+            SubSystem::OfficialCoreELEC => "Official CoreELEC",
+            SubSystem::OfficialEmuELEC => "Official EmuELEC",
+            SubSystem::HybridCoreELEC => "Hybrid CoreELEC",
+            SubSystem::HybridEmuELEC => "Hybrid EmuELEC",
+        }
+    }
+
+    fn iterator() -> std::slice::Iter<'static, Self> {
+        const SUBSYSTEMS: [SubSystem; 4] = [
+            SubSystem::OfficialCoreELEC, 
+            SubSystem::OfficialEmuELEC,
+            SubSystem::HybridCoreELEC,
+            SubSystem::HybridEmuELEC];
+        SUBSYSTEMS.iter()
+    }
+
     fn cfgload_flag(&self) -> &[u8] {
         match self {
-            SubSystem::CoreELEC => b"HybridELEC (CE)",
-            SubSystem::EmuELEC => b"HybridELEC (EE)",
+            SubSystem::OfficialCoreELEC => b"CoreELEC on eMMC",
+            SubSystem::OfficialEmuELEC => b"EmuELEC on eMMC",
+            SubSystem::HybridCoreELEC => b"HybridELEC (CE) on eMMC",
+            SubSystem::HybridEmuELEC => b"HybridELEC (EE) on eMMC",
         }
     }
 }
 
 fn check_buffer_cfgload_system(buffer: &[u8]) -> Option<SubSystem> {
-    for subsystem in [SubSystem::CoreELEC, SubSystem::EmuELEC] {
+    for subsystem in SubSystem::iterator() {
         let cfgload_flag = subsystem.cfgload_flag();
         if buffer.windows(cfgload_flag.len()).position(
             |window|window == cfgload_flag).is_some() 
         {
-            return Some(subsystem)
+            return Some(*subsystem)
         }
     }
     None
@@ -191,10 +216,10 @@ fn scan(prefix: &str) -> Result<()> {
             continue
         }
         match check_dir_entry_system(entry) {
-            Ok(Some(SubSystem::CoreELEC)) => if ce == 0 || ce > id {
+            Ok(Some(SubSystem::HybridCoreELEC)) => if ce == 0 || ce > id {
                 ce = id
             },
-            Ok(Some(SubSystem::EmuELEC)) => if ee == 0 || ee > id {
+            Ok(Some(SubSystem::HybridEmuELEC)) => if ee == 0 || ee > id {
                 ee = id
             },
             _ => (),
@@ -204,6 +229,36 @@ fn scan(prefix: &str) -> Result<()> {
     Ok(())
 }
 
-fn main() {
-    println!("WIP, do not use")
+
+#[derive(clap::Subcommand, Debug, Clone)]
+enum Action {
+    /// Check if the file/dev at the path contains a CoreELEC/EmuELC system.
+    /// Result is any of the following if a system is found:
+    /// `Official CoreELEC`, `Official EmuELEC`, `Hybird CoreELEC`, 
+    /// `Hybrid EmuELEC`
+    CheckSystem {
+        /// Path of file/dev to verify, containing a FAT fs, containing
+        /// `cfgload`, `config.ini`, `device_trees/`, `kernel.img`, `SYSTEM`
+        /// in which `cfgload` is specially for a subsystem
+        path: String
+    },
+}
+
+#[derive(Parser, Debug)]
+#[command(version)]
+struct Arg {
+    #[command(subcommand)]
+    action: Action
+}
+
+fn main() -> Result<()> {
+    let arg = Arg::parse();
+    match arg.action {
+        Action::CheckSystem { path } => if let Some(system) = check_path_system(&path)? {
+            println!("{}", system.as_str())
+        } else {
+            return Err(Error::InvalidSystem)
+        },
+    }
+    Ok(())
 }
